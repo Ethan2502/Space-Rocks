@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spacetime Sandbox</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #030303;
+            color: #fff;
+            font-family: sans-serif;
+            user-select: none;
+        }
+        #hint {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.5);
+            pointer-events: none;
+            font-weight: 300;
+            letter-spacing: 1px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px 20px;
+            border-radius: 20px;
+        }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <div id="hint"></div>
+    <canvas id="simCanvas"></canvas>
+    
+    <script>
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+        let width, height;
+        
+        function resize() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        const G = 5.0; // Gravity constant
+        const DT = 0.05; // Time step
+
+        class Vector {
+            constructor(x, y) { this.x = x; this.y = y; }
+        }
+
+        class Body {
+            constructor(x, y, mass, hue) {
+                this.pos = new Vector(x, y);
+                this.vel = new Vector(0, 0);
+                this.acc = new Vector(0, 0);
+                this.mass = mass;
+                this.hue = hue;
+                this.active = true;
+                
+                // Random properties for procedural textures
+                this.seed = Math.random() * 1000;
+                this.spinSpeed = (Math.random() - 0.5) * 1.5; 
+                
+                this.updateRadius();
+            }
+            updateRadius() {
+                // Radius scales smoothly with mass
+                this.radius = Math.max(3, Math.sqrt(this.mass) * 1.5);
+            }
+        }
+
+        let bodies = [];
+        let state = 'idle'; // 'creating', 'dragging'
+        let targetBody = null;
+        let startX = 0, startY = 0;
+        let mouseX = 0, mouseY = 0;
+
+        window.addEventListener('mousedown', e => {
+            if (e.button !== 0) return; // Left click only
+            startX = e.clientX; startY = e.clientY;
+            mouseX = startX; mouseY = startY;
+            
+            // Check if grabbing an existing object
+            let clicked = null;
+            for (let i = bodies.length - 1; i >= 0; i--) {
+                let b = bodies[i];
+                if (!b.active) continue;
+                let dx = b.pos.x - mouseX;
+                let dy = b.pos.y - mouseY;
+                // Generous hitbox for easy grabbing
+                if (dx*dx + dy*dy <= Math.pow(b.radius + 15, 2)) {
+                    clicked = b;
+                    break;
+                }
+            }
+            
+            if (clicked) {
+                state = 'dragging';
+                targetBody = clicked;
+                startX = targetBody.pos.x;
+                startY = targetBody.pos.y;
+                targetBody.vel = new Vector(0, 0); // Stop movement while grabbed
+            } else {
+                state = 'creating';
+                targetBody = new Body(startX, startY, 1, Math.random() * 360);
+                bodies.push(targetBody);
+            }
+        });
+
+        window.addEventListener('mousemove', e => {
+            mouseX = e.clientX; mouseY = e.clientY;
+        });
+
+        window.addEventListener('mouseup', e => {
+            if (e.button !== 0) return;
+            if (targetBody && (state === 'creating' || state === 'dragging')) {
+                // Launch in the direction of the drag
+                let dx = mouseX - startX;
+                let dy = mouseY - startY;
+                targetBody.vel.x = dx * 0.04;
+                targetBody.vel.y = dy * 0.04;
+                targetBody = null;
+            }
+            state = 'idle';
+        });
+
+        function getWarped(x, y) {
+            let dx_total = 0, dy_total = 0;
+            for (let b of bodies) {
+                if (!b.active) continue;
+                let dx = b.pos.x - x;
+                let dy = b.pos.y - y;
+                let distSq = dx*dx + dy*dy;
+                let dist = Math.sqrt(distSq);
+                
+                if (dist < b.radius * 0.5) dist = b.radius * 0.5; // allow slight inner warp
+                
+                // Smoother warp formula
+                let warp = (b.mass * 20) / (dist + Math.sqrt(b.mass)); 
+                if (warp > dist * 0.7) warp = dist * 0.7; // Prevent overlapping inversion
+                
+                dx_total += (dx / dist) * warp;
+                dy_total += (dy / dist) * warp;
+            }
+            return { x: x + dx_total, y: y + dy_total };
+        }
+
+        function drawGrid() {
+            ctx.strokeStyle = 'rgba(100, 150, 255, 0.12)'; // Space-like blue tint
+            ctx.lineWidth = 1;
+            const step = 50;     // Denser grid
+            const segment = 12;  // Higher resolution for smoother curves
+            
+            ctx.beginPath();
+            // Vertical lines
+            for (let x = 0; x <= width; x += step) {
+                let started = false;
+                for (let y = -segment; y <= height + segment; y += segment) {
+                    let p = getWarped(x, y);
+                    if (!started) { ctx.moveTo(p.x, p.y); started = true; }
+                    else ctx.lineTo(p.x, p.y);
+                }
+            }
+            // Horizontal lines
+            for (let y = 0; y <= height; y += step) {
+                let started = false;
+                for (let x = -segment; x <= width + segment; x += segment) {
+                    let p = getWarped(x, y);
+                    if (!started) { ctx.moveTo(p.x, p.y); started = true; }
+                    else ctx.lineTo(p.x, p.y);
+                }
+            }
+            ctx.stroke();
+        }
+
+        function loop(timestamp) {
+            let time = (timestamp || 0) * 0.001; // Time in seconds for animations
+
+            // 1. Interaction Updates
+            if (state === 'creating' && targetBody) {
+                targetBody.mass += 15 * DT; // Mass grows over time
+                targetBody.updateRadius();
+                targetBody.pos.x = startX;
+                targetBody.pos.y = startY;
+            } else if (state === 'dragging' && targetBody) {
+                targetBody.pos.x = startX;
+                targetBody.pos.y = startY;
+            }
+
+            // 2. Physics - Accelerations
+            for (let i = 0; i < bodies.length; i++) {
+                if (!bodies[i].active || bodies[i] === targetBody) continue; // Don't apply gravity TO grabbed object
+                bodies[i].acc.x = 0; bodies[i].acc.y = 0;
+                for (let j = 0; j < bodies.length; j++) {
+                    if (i === j || !bodies[j].active) continue;
+                    let dx = bodies[j].pos.x - bodies[i].pos.x;
+                    let dy = bodies[j].pos.y - bodies[i].pos.y;
+                    let rSq = dx*dx + dy*dy;
+                    let r = Math.sqrt(rSq);
+                    if (r < 1) continue;
+                    let force = (G * bodies[j].mass) / rSq;
+                    bodies[i].acc.x += force * (dx/r);
+                    bodies[i].acc.y += force * (dy/r);
+                }
+            }
+
+            // 3. Physics - Move
+            for (let i = 0; i < bodies.length; i++) {
+                if (!bodies[i].active || bodies[i] === targetBody) continue;
+                bodies[i].vel.x += bodies[i].acc.x * DT;
+                bodies[i].vel.y += bodies[i].acc.y * DT;
+                bodies[i].pos.x += bodies[i].vel.x * DT;
+                bodies[i].pos.y += bodies[i].vel.y * DT;
+            }
+
+            // 4. Physics - Collisions (Conservation of Momentum)
+            for (let i = 0; i < bodies.length; i++) {
+                if (!bodies[i].active) continue;
+                for (let j = i + 1; j < bodies.length; j++) {
+                    if (!bodies[j].active) continue;
+                    let dx = bodies[j].pos.x - bodies[i].pos.x;
+                    let dy = bodies[j].pos.y - bodies[i].pos.y;
+                    let r = Math.sqrt(dx*dx + dy*dy);
+                    
+                    if (r < bodies[i].radius + bodies[j].radius) {
+                        // Merge them
+                        let survivor = bodies[i].mass > bodies[j].mass ? bodies[i] : bodies[j];
+                        let victim = survivor === bodies[i] ? bodies[j] : bodies[i];
+                        
+                        survivor.vel.x = (survivor.vel.x * survivor.mass + victim.vel.x * victim.mass) / (survivor.mass + victim.mass);
+                        survivor.vel.y = (survivor.vel.y * survivor.mass + victim.vel.y * victim.mass) / (survivor.mass + victim.mass);
+                        survivor.mass += victim.mass;
+                        survivor.updateRadius();
+                        
+                        // Blend hue
+                        survivor.hue = (survivor.hue + victim.hue) / 2;
+                        victim.active = false;
+                        
+                        // If holding the victim, switch hold to the survivor
+                        if (targetBody === victim) targetBody = survivor;
+                    }
+                }
+            }
+
+            // Clean up off-screen / inactive bodies
+            bodies = bodies.filter(b => {
+                if (!b.active) return false;
+                let dx = b.pos.x - width/2;
+                let dy = b.pos.y - height/2;
+                // Remove if it flies impossibly far away
+                if (dx*dx + dy*dy > width*height * 10) return false;
+                return true;
+            });
+
+            // 5. Render - Background
+            ctx.fillStyle = '#030303';
+            ctx.fillRect(0, 0, width, height);
+
+            // Render - Warp Grid
+            drawGrid();
+
+            // Render - Aiming Line
+            if (targetBody && (state === 'creating' || state === 'dragging')) {
+                ctx.beginPath();
+                ctx.moveTo(startX, startY);
+                ctx.lineTo(mouseX, mouseY);
+                ctx.strokeStyle = `hsl(${targetBody.hue}, 100%, 60%)`;
+                ctx.lineWidth = 2;
+                ctx.setLineDash([5, 5]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+
+            // Render - Planets
+            for (let b of bodies) {
+                if (!b.active) continue;
+
+                // Outer Glow (Drawn before clipping)
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(b.pos.x, b.pos.y, b.radius, 0, Math.PI * 2);
+                ctx.shadowColor = `hsl(${b.hue}, 100%, 50%)`;
+                ctx.shadowBlur = b.radius * 0.8;
+                ctx.fillStyle = `hsl(${b.hue}, 100%, 50%)`;
+                ctx.fill();
+                ctx.restore();
+
+                // Planet Texture (clipped to circle)
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(b.pos.x, b.pos.y, b.radius, 0, Math.PI * 2);
+                ctx.clip();
+
+                // Base Color & Rotation
+                ctx.translate(b.pos.x, b.pos.y);
+                ctx.rotate(time * b.spinSpeed);
+
+                ctx.fillStyle = `hsl(${b.hue}, 60%, 50%)`;
+                ctx.fillRect(-b.radius, -b.radius, b.radius*2, b.radius*2);
+
+                // Animated Swirls / Gas Bands
+                for (let s = 0; s < 4; s++) {
+                    ctx.beginPath();
+                    let waveOffset = Math.sin(time * 0.5 + s + b.seed) * b.radius * 0.8;
+                    let amp = b.radius * 0.5;
+                    ctx.moveTo(-b.radius, waveOffset);
+                    ctx.bezierCurveTo(
+                        -b.radius/2, waveOffset + Math.sin(time * 1.2 + b.seed + s) * amp,
+                         b.radius/2, waveOffset + Math.cos(time * 0.8 + b.seed + s) * amp,
+                         b.radius, waveOffset
+                    );
+                    ctx.lineTo(b.radius, b.radius);
+                    ctx.lineTo(-b.radius, b.radius);
+                    ctx.fillStyle = `hsla(${(b.hue + s * 30) % 360}, 80%, 60%, 0.5)`;
+                    ctx.fill();
+                }
+                ctx.restore();
+
+                // 3D Spherical Shadow (drawn over the texture for depth)
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(b.pos.x, b.pos.y, b.radius, 0, Math.PI * 2);
+                let grad = ctx.createRadialGradient(
+                    b.pos.x - b.radius*0.3, b.pos.y - b.radius*0.3, b.radius*0.1,
+                    b.pos.x, b.pos.y, b.radius
+                );
+                grad.addColorStop(0, 'rgba(255, 255, 255, 0.4)');
+                grad.addColorStop(0.3, 'rgba(255, 255, 255, 0.0)');
+                grad.addColorStop(0.7, 'rgba(0, 0, 0, 0.4)');
+                grad.addColorStop(1, 'rgba(0, 0, 0, 0.9)');
+                ctx.fillStyle = grad;
+                ctx.fill();
+                ctx.restore();
+            }
+
+            requestAnimationFrame(loop);
+        }
+        
+        requestAnimationFrame(loop);
+    </script>
+</body>
+</html>
