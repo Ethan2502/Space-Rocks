@@ -184,7 +184,7 @@
 
             // 1. Interaction Updates
             if (state === 'creating' && targetBody) {
-                targetBody.mass += 15 * DT; // Mass grows over time
+                targetBody.mass += 50 * DT; // Mass grows over time
                 targetBody.updateRadius();
                 targetBody.pos.x = startX;
                 targetBody.pos.y = startY;
