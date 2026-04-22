@@ -2,7 +2,7 @@
 #include <math.h>
 #include <stdlib.h>
 
-#define G 50.0
+#define G 500.0
 #define DT 0.01
 
 struct Vector {
